@@ -1,29 +1,73 @@
-FROM       ubuntu:17.04
+#
+# NOTE: THIS DOCKERFILE IS GENERATED VIA "update.sh"
+#
+# PLEASE DO NOT EDIT IT DIRECTLY.
+#
 
-# Java Version
-ENV  JAVA_VERSION=9.0.1 \
-     JAVA_BUILD=11  \
-     JAVA_HOME=/usr/lib/jvm/current-java
+FROM buildpack-deps:sid-scm
 
-#  Openjdk  http://download.java.net/java/GA/jdk9/9.0.1/binaries/openjdk-9.0.1_linux-x64_bin.tar.gz
+# A few reasons for installing distribution-provided OpenJDK:
+#
+#  1. Oracle.  Licensing prevents us from redistributing the official JDK.
+#
+#  2. Compiling OpenJDK also requires the JDK to be installed, and it gets
+#     really hairy.
+#
+#     For some sample build times, see Debian's buildd logs:
+#       https://buildd.debian.org/status/logs.php?pkg=openjdk-9
 
-RUN  apt-get update -y && apt-get upgrade -y
+RUN apt-get update && apt-get install -y --no-install-recommends \
+		bzip2 \
+		unzip \
+		xz-utils \
+	&& rm -rf /var/lib/apt/lists/*
 
-RUN apt-get install wget tar bash -y
+# Default to UTF-8 file.encoding
+ENV LANG C.UTF-8
 
-RUN cd /tmp && \
-    wget "http://download.java.net/java/GA/jdk9/${JAVA_VERSION}/binaries/openjdk-${JAVA_VERSION}_linux-x64_bin.tar.gz" && \
-    tar xzf "openjdk-${JAVA_VERSION}_linux-x64_bin.tar.gz" && \
-    mkdir -p /usr/lib/jvm && mv "/tmp/jdk-${JAVA_VERSION}" "/usr/lib/jvm/openjdk-${JAVA_VERSION}"  && \
-    ln -s "openjdk-${JAVA_VERSION}" $JAVA_HOME && \
-    ln -s $JAVA_HOME/bin/java /usr/bin/java && \
-    ln -s $JAVA_HOME/bin/javac /usr/bin/javac && \
-    ln -s $JAVA_HOME/bin/jshell /usr/bin/jshell
+# add a simple script that can auto-detect the appropriate JAVA_HOME value
+# based on whether the JDK or only the JRE is installed
+RUN { \
+		echo '#!/bin/sh'; \
+		echo 'set -e'; \
+		echo; \
+		echo 'dirname "$(dirname "$(readlink -f "$(which javac || which java)")")"'; \
+	} > /usr/local/bin/docker-java-home \
+	&& chmod +x /usr/local/bin/docker-java-home
 
-RUN rm -rf $JAVA_HOME/*.txt && \
-    rm -rf $JAVA_HOME/*.html && \
-    rm -rf $JAVA_HOME/man && \
-    rm -rf $JAVA_HOME/lib/src.zip && \
-    rm /tmp/*
+# do some fancy footwork to create a JAVA_HOME that's cross-architecture-safe
+RUN ln -svT "/usr/lib/jvm/java-9-openjdk-$(dpkg --print-architecture)" /docker-java-home
+ENV JAVA_HOME /docker-java-home
 
-RUN apt-get remove --purge wget -y && apt-get clean
+ENV JAVA_VERSION 9.0.4+12
+ENV JAVA_DEBIAN_VERSION 9.0.4+12-4
+
+RUN set -ex; \
+	\
+# deal with slim variants not having man page directories (which causes "update-alternatives" to fail)
+	if [ ! -d /usr/share/man/man1 ]; then \
+		mkdir -p /usr/share/man/man1; \
+	fi; \
+	\
+	apt-get update; \
+	apt-get install -y \
+		openjdk-9-jdk="$JAVA_DEBIAN_VERSION" \
+	; \
+	rm -rf /var/lib/apt/lists/*; \
+	\
+# verify that "docker-java-home" returns what we expect
+	[ "$(readlink -f "$JAVA_HOME")" = "$(docker-java-home)" ]; \
+	\
+# update-alternatives so that future installs of other OpenJDK versions don't change /usr/bin/java
+	update-alternatives --get-selections | awk -v home="$(readlink -f "$JAVA_HOME")" 'index($3, home) == 1 { $2 = "manual"; print | "update-alternatives --set-selections" }'; \
+# ... and verify that it actually worked for one of the alternatives we care about
+	update-alternatives --query java | grep -q 'Status: manual'
+
+# https://docs.oracle.com/javase/9/tools/jshell.htm
+# https://en.wikipedia.org/wiki/JShell
+CMD ["jshell"]
+
+# If you're reading this and have any feedback on how this image could be
+# improved, please open an issue or a pull request so we can discuss it!
+#
+#   https://github.com/docker-library/openjdk/issues
